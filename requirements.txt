@@ -1,2 +1,5 @@
 streamlit
 scrapling
+beautifulsoup4
+requests
+lxml
