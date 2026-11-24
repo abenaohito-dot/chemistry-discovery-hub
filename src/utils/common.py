@@ -1,6 +1,7 @@
 """Shared data models, identifier normalizers, RDKit SVG rendering, and merge helpers."""
 from __future__ import annotations
 
+import os
 import re
 import urllib.parse
 from dataclasses import asdict, dataclass, field
@@ -323,4 +324,29 @@ def classify_request_error(source: str, exc: Exception, hint: str = "") -> Query
             return QueryResult(source=source, status="rate_limited", message=msg)
         return QueryResult(source=source, status="error", message=f"{source}: HTTP {code}")
     return QueryResult(source=source, status="error", message=f"{source}: 取得失敗 ({type(exc).__name__})")
+
+
+def get_config_value(key: str, default: str = "") -> str:
+    """Read configuration from environment variables (.env) first, then Streamlit Secrets."""
+    env_val = os.getenv(key)
+    if env_val is not None and env_val.strip():
+        return env_val.strip()
+    try:
+        import streamlit as st
+
+        secrets = getattr(st, "secrets", None)
+        if secrets is not None:
+            if key in secrets:
+                val = secrets[key]
+                if val is not None and str(val).strip():
+                    return str(val).strip()
+            if "general" in secrets:
+                general = secrets["general"]
+                if hasattr(general, "get"):
+                    val = general.get(key)
+                    if val is not None and str(val).strip():
+                        return str(val).strip()
+    except Exception:
+        pass
+    return default
 

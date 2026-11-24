@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import html
-import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,7 @@ except ImportError:
 
 from src.utils.common import (
     QueryResult,
+    get_config_value,
     is_cas_number,
     is_inchikey,
     merge_compounds,
@@ -353,10 +353,10 @@ with st.sidebar:
     max_lit_results = st.slider("文献 最大件数 / DB", 5, 50, 20, 5)
 
     st.markdown("---")
-    st.markdown("### 🔑 APIキー設定状況 (.env)")
-    oa_ok = "設定済み ($1/日)" if os.getenv("OPENALEX_API_KEY") else "未設定 (匿名IP共有)"
-    ncbi_ok = "設定済み (10 req/s)" if os.getenv("NCBI_API_KEY") else "未設定 (3 req/s)"
-    cr_ok = "設定済み (Polite)" if os.getenv("CROSSREF_EMAIL") else "未設定"
+    st.markdown("### 🔑 APIキー設定状況 (.env / Secrets)")
+    oa_ok = "設定済み ($1/日)" if get_config_value("OPENALEX_API_KEY") else "未設定 (匿名IP共有)"
+    ncbi_ok = "設定済み (10 req/s)" if get_config_value("NCBI_API_KEY") else "未設定 (3 req/s)"
+    cr_ok = "設定済み (Polite)" if get_config_value("CROSSREF_EMAIL") else "未設定"
     st.caption(f"OpenAlex: {oa_ok}  \nNCBI: {ncbi_ok}  \nCrossRef: {cr_ok}")
 
     st.markdown("---")

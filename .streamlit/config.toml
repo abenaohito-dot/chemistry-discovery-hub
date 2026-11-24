@@ -8,7 +8,9 @@ font = "sans serif"
 
 [server]
 maxUploadSize = 50
-enableCORS = false
+
+[client]
+showErrorDetails = "none"
 
 [browser]
 gatherUsageStats = false

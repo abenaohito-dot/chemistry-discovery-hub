@@ -1,7 +1,6 @@
 """OpenAlex Fetcher — Scholarly literature metadata via OpenAlex REST API."""
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import requests
@@ -11,6 +10,7 @@ from src.utils.common import (
     QueryResult,
     cached_query,
     classify_request_error,
+    get_config_value,
     make_cache_key,
     normalize_doi,
 )
@@ -66,7 +66,7 @@ class OpenAlexFetcher:
         key = make_cache_key("openalex", q, limit, int(title_abstract_only))
 
         def _fetch() -> QueryResult:
-            api_key = os.getenv("OPENALEX_API_KEY", "").strip()
+            api_key = get_config_value("OPENALEX_API_KEY")
             params: dict[str, Any] = {
                 "per-page": limit,
                 "select": _SELECT_FIELDS,
@@ -86,13 +86,13 @@ class OpenAlexFetcher:
                     return QueryResult(
                         source="OpenAlex",
                         status="rate_limited",
-                        message="OpenAlex: レート制限 (HTTP 429) — .env に無料の OPENALEX_API_KEY 設定を推奨",
+                        message="OpenAlex: レート制限 (HTTP 429) — 時間をおいて再試行するか、管理者設定の API キーを確認してください",
                     )
                 resp.raise_for_status()
                 data = resp.json()
             except Exception as exc:
                 return classify_request_error(
-                    "OpenAlex", exc, hint=".env に無料の OPENALEX_API_KEY 設定を推奨"
+                    "OpenAlex", exc, hint="時間をおいて再試行するか、管理者設定の API キーを確認してください"
                 )
 
             total = int((data.get("meta") or {}).get("count") or 0)

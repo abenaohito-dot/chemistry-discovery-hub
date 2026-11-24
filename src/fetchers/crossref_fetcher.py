@@ -4,7 +4,6 @@ Uses the CrossRef REST API (free, no auth required).
 """
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 
@@ -15,6 +14,7 @@ from src.utils.common import (
     QueryResult,
     cached_query,
     classify_request_error,
+    get_config_value,
     make_cache_key,
     normalize_doi,
 )
@@ -26,7 +26,6 @@ except ImportError:
     pass
 
 CROSSREF_URL = "https://api.crossref.org/works"
-CROSSREF_EMAIL = os.getenv("CROSSREF_EMAIL", "")
 
 # Common natural product journal ISSNs for targeted search
 NATURAL_PRODUCT_JOURNALS: dict[str, str] = {
@@ -56,10 +55,15 @@ class CrossRefFetcher:
     def __init__(self, cache: SQLiteCache | None = None):
         self.cache = cache
         self.session = requests.Session()
+        self.session.headers.update({"User-Agent": "ChemistryDiscoveryHub/2.0"})
+
+    @staticmethod
+    def _build_headers() -> dict[str, str]:
         ua = "ChemistryDiscoveryHub/2.0"
-        if CROSSREF_EMAIL:
-            ua += f" (mailto:{CROSSREF_EMAIL})"
-        self.session.headers.update({"User-Agent": ua})
+        email = get_config_value("CROSSREF_EMAIL")
+        if email:
+            ua += f" (mailto:{email})"
+        return {"User-Agent": ua}
 
     def search(
         self,
@@ -88,7 +92,12 @@ class CrossRefFetcher:
                     params["filter"] = f"issn:{issn}"
 
             try:
-                resp = self.session.get(CROSSREF_URL, params=params, timeout=20)
+                resp = self.session.get(
+                    CROSSREF_URL,
+                    params=params,
+                    headers=self._build_headers(),
+                    timeout=20,
+                )
                 resp.raise_for_status()
                 msg_body = resp.json().get("message", {})
             except Exception as exc:

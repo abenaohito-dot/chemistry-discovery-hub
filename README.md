@@ -80,4 +80,18 @@ NCBI_API_KEY=
 CROSSREF_EMAIL=your.email@institution.ac.jp
 ```
 
-> **注意**: `.env` および `.cache/`（`*.sqlite`）は絶対に Git へコミット・公開しないでください。
+## Streamlit Community Cloud での公開設定
+
+Streamlit Community Cloud（Linux / Python 3.11 想定）で動作させる場合、以下の設定を行います。
+
+- **Python バージョン**: `3.11`（App settings → Advanced settings）
+- **システム依存関係**: 同梱の `packages.txt`（`libxrender1`, `libxext6`）により Linux 環境での RDKit 構造描画に対応しています。
+- **Secrets 設定**: 管理画面の **App settings → Secrets** に以下を TOML 形式で登録してください（全項目任意・設定時のみレート制限緩和／Polite Pool 有効化）。
+
+```toml
+OPENALEX_API_KEY = "your_openalex_key"
+NCBI_API_KEY = "your_ncbi_key"
+CROSSREF_EMAIL = "your.email@institution.ac.jp"
+```
+
+> **注意**: `.env`、`.streamlit/secrets.toml`、および `.cache/`（`*.sqlite`）は絶対に Git へコミット・公開しないでください。

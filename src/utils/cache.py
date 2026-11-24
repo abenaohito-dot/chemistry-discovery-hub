@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -17,22 +18,44 @@ CACHEABLE_STATUSES = {"ok", "empty", "truncated"}
 class SQLiteCache:
     """Persistent SQLite key-value cache with per-entry TTL."""
 
-    def __init__(self, db_path: str | Path = DEFAULT_CACHE_PATH):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        with self._lock:
-            self._conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS api_cache (
-                    cache_key TEXT PRIMARY KEY,
-                    payload TEXT NOT NULL,
-                    expires_at REAL NOT NULL
-                )
-                """
+    @staticmethod
+    def _open_connection(target: str) -> sqlite3.Connection:
+        conn = sqlite3.connect(target, check_same_thread=False)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS api_cache (
+                cache_key TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                expires_at REAL NOT NULL
             )
-            self._conn.commit()
+            """
+        )
+        conn.commit()
+        return conn
+
+    def __init__(self, db_path: str | Path = DEFAULT_CACHE_PATH):
+        self._lock = threading.Lock()
+        if str(db_path) == ":memory:":
+            self.db_path = Path(":memory:")
+            self._conn = self._open_connection(":memory:")
+            return
+
+        requested = Path(db_path)
+        fallback_path = (
+            Path(tempfile.gettempdir()) / "chemistry_discovery_hub_cache" / "api_cache.sqlite"
+        )
+        candidates = [requested] if requested == fallback_path else [requested, fallback_path]
+        for candidate in candidates:
+            try:
+                candidate.parent.mkdir(parents=True, exist_ok=True)
+                self._conn = self._open_connection(str(candidate))
+                self.db_path = candidate
+                return
+            except (OSError, sqlite3.OperationalError):
+                continue
+
+        self.db_path = Path(":memory:")
+        self._conn = self._open_connection(":memory:")
 
     def get(self, key: str) -> Any | None:
         """Return cached payload if present and unexpired, else None."""

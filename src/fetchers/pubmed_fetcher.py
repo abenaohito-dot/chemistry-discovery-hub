@@ -4,7 +4,6 @@ Retrieves papers from PubMed with title, authors, DOI, abstract, MeSH terms.
 """
 from __future__ import annotations
 
-import os
 import time
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -16,6 +15,7 @@ from src.utils.common import (
     QueryResult,
     cached_query,
     classify_request_error,
+    get_config_value,
     make_cache_key,
     normalize_doi,
 )
@@ -48,7 +48,7 @@ class PubMedFetcher:
         key = make_cache_key("pubmed", q, limit)
 
         def _fetch() -> QueryResult:
-            api_key = os.getenv("NCBI_API_KEY", "").strip()
+            api_key = get_config_value("NCBI_API_KEY")
             delay = 0.11 if api_key else 0.34
             try:
                 total, pmids = self._esearch(q, limit, api_key)
