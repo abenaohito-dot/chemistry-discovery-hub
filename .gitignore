@@ -34,3 +34,9 @@ Thumbs.db
 *.csv
 *.xlsx
 exports/
+
+# Local API cache & SQLite
+.cache/
+*.sqlite
+*.sqlite3
+*.db

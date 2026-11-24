@@ -189,7 +189,45 @@ h1, h2, h3 {
 .source-pubmed  { background: rgba(34, 197, 94, 0.15); color: #86efac; border: 1px solid rgba(34,197,94,0.25); }
 .source-crossref{ background: rgba(251, 146, 60, 0.15); color: #fdba74; border: 1px solid rgba(251,146,60,0.25); }
 .source-europmc { background: rgba(96, 165, 250, 0.15); color: #93c5fd; border: 1px solid rgba(96,165,250,0.25); }
-.source-scrapling{ background: rgba(167, 139, 250, 0.15); color: #c4b5fd; border: 1px solid rgba(167,139,250,0.25);}
+.source-openalex{ background: rgba(167, 139, 250, 0.15); color: #c4b5fd; border: 1px solid rgba(167,139,250,0.25); }
+.source-pubchem { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; border: 1px solid rgba(56,189,248,0.25); }
+.source-lotus   { background: rgba(52, 211, 153, 0.15); color: #6ee7b7; border: 1px solid rgba(52,211,153,0.25); }
+.source-coconut { background: rgba(244, 114, 182, 0.15); color: #f9a8d4; border: 1px solid rgba(244,114,182,0.25); }
+
+.mol-svg-box {
+    background: #ffffff;
+    border-radius: 8px;
+    padding: 6px;
+    display: inline-block;
+    margin-bottom: 0.5rem;
+    line-height: 0;
+}
+.mol-svg-box svg {
+    max-width: 100%;
+    height: auto;
+}
+
+.status-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin: 0.5rem 0 1rem;
+}
+.status-chip {
+    display: inline-block;
+    font-size: 0.76rem;
+    padding: 0.22rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.05);
+    color: #e2e8f0;
+}
+.status-ok           { border-color: rgba(34,197,94,0.45);  color: #86efac; }
+.status-truncated    { border-color: rgba(56,189,248,0.45); color: #7dd3fc; }
+.status-empty        { border-color: rgba(148,163,184,0.35);color: #cbd5e1; }
+.status-timeout      { border-color: rgba(251,146,60,0.5);  color: #fdba74; }
+.status-rate_limited { border-color: rgba(250,204,21,0.5);  color: #fde047; }
+.status-error        { border-color: rgba(248,113,113,0.5); color: #fca5a5; }
 
 /* ── Action Buttons ─────────────────────────────────────── */
 .btn-scifinder {

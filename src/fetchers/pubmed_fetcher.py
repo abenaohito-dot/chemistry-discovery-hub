@@ -10,6 +10,16 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 import requests
+
+from src.utils.cache import SQLiteCache, TTL_LITERATURE_SECONDS
+from src.utils.common import (
+    QueryResult,
+    cached_query,
+    classify_request_error,
+    make_cache_key,
+    normalize_doi,
+)
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -17,41 +27,56 @@ except ImportError:
     pass
 
 ESEARCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-EFETCH_URL  = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-
-NCBI_API_KEY = os.getenv("NCBI_API_KEY", "")
-# Rate: 10 req/s with key, 3 req/s without
-_RATE_DELAY  = 0.11 if NCBI_API_KEY else 0.34
+EFETCH_URL = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
 
 class PubMedFetcher:
     """Fetch literature metadata from PubMed via NCBI E-utilities."""
 
-    def __init__(self):
+    def __init__(self, cache: SQLiteCache | None = None):
+        self.cache = cache
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "ChemistryDiscoveryHub/1.0"})
+        self.session.headers.update({"User-Agent": "ChemistryDiscoveryHub/2.0"})
 
-    def search(self, query: str, max_results: int = 20) -> list[dict[str, Any]]:
-        """
-        Search PubMed and return a list of paper dicts.
+    def search(self, query: str, max_results: int = 20) -> QueryResult:
+        """Search PubMed and return a QueryResult containing parsed papers."""
+        q = query.strip()
+        if not q:
+            return QueryResult(source="PubMed", status="empty")
 
-        Args:
-            query:       PubMed search string (supports MeSH terms, field tags, etc.)
-            max_results: Maximum number of records to retrieve.
+        limit = max(1, min(int(max_results), 100))
+        key = make_cache_key("pubmed", q, limit)
 
-        Returns:
-            List of dicts with keys: title, authors, doi, abstract, journal,
-            year, pmid, keywords, source.
-        """
-        pmids = self._esearch(query, max_results)
-        if not pmids:
-            return []
-        time.sleep(_RATE_DELAY)
-        return self._efetch(pmids)
+        def _fetch() -> QueryResult:
+            api_key = os.getenv("NCBI_API_KEY", "").strip()
+            delay = 0.11 if api_key else 0.34
+            try:
+                total, pmids = self._esearch(q, limit, api_key)
+                if not pmids:
+                    return QueryResult(source="PubMed", status="empty", total_count=0)
+                time.sleep(delay)
+                papers = self._efetch(pmids, api_key)
+            except Exception as exc:
+                return classify_request_error("PubMed", exc)
 
-    # ── Private helpers ──────────────────────────────────────────────────────
+            if not papers:
+                return QueryResult(source="PubMed", status="empty", total_count=0)
 
-    def _esearch(self, query: str, retmax: int) -> list[str]:
+            truncated = total > len(papers)
+            status = "truncated" if truncated else "ok"
+            msg = f"{len(papers)} / {total} 件表示" if truncated else f"{len(papers)} 件"
+            return QueryResult(
+                source="PubMed",
+                status=status,
+                items=papers,
+                total_count=total,
+                truncated=truncated,
+                message=msg,
+            )
+
+        return cached_query(self.cache, key, TTL_LITERATURE_SECONDS, _fetch)
+
+    def _esearch(self, query: str, retmax: int, api_key: str) -> tuple[int, list[str]]:
         params: dict[str, Any] = {
             "db": "pubmed",
             "term": query,
@@ -59,101 +84,80 @@ class PubMedFetcher:
             "retmode": "json",
             "sort": "relevance",
         }
-        if NCBI_API_KEY:
-            params["api_key"] = NCBI_API_KEY
+        if api_key:
+            params["api_key"] = api_key
 
-        try:
-            resp = self.session.get(ESEARCH_URL, params=params, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("esearchresult", {}).get("idlist", [])
-        except Exception as exc:
-            print(f"[PubMed] esearch error: {exc}")
-            return []
+        resp = self.session.get(ESEARCH_URL, params=params, timeout=15)
+        resp.raise_for_status()
+        res = resp.json().get("esearchresult", {})
+        return int(res.get("count") or 0), res.get("idlist", [])
 
-    def _efetch(self, pmids: list[str]) -> list[dict[str, Any]]:
+    def _efetch(self, pmids: list[str], api_key: str) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
             "db": "pubmed",
             "id": ",".join(pmids),
             "retmode": "xml",
             "rettype": "abstract",
         }
-        if NCBI_API_KEY:
-            params["api_key"] = NCBI_API_KEY
+        if api_key:
+            params["api_key"] = api_key
 
-        try:
-            resp = self.session.get(EFETCH_URL, params=params, timeout=30)
-            resp.raise_for_status()
-            return self._parse_xml(resp.text)
-        except Exception as exc:
-            print(f"[PubMed] efetch error: {exc}")
-            return []
+        resp = self.session.get(EFETCH_URL, params=params, timeout=25)
+        resp.raise_for_status()
+        return self._parse_xml(resp.text)
 
     def _parse_xml(self, xml_text: str) -> list[dict[str, Any]]:
         papers: list[dict[str, Any]] = []
-        try:
-            root = ET.fromstring(xml_text)
-        except ET.ParseError as exc:
-            print(f"[PubMed] XML parse error: {exc}")
-            return papers
-
+        root = ET.fromstring(xml_text)
         for article in root.findall(".//PubmedArticle"):
             papers.append(self._parse_article(article))
-
         return papers
 
     def _parse_article(self, article: ET.Element) -> dict[str, Any]:
         medline = article.find("MedlineCitation")
-        art     = medline.find("Article") if medline is not None else None
+        art = medline.find("Article") if medline is not None else None
 
-        # PMID
         pmid_el = medline.find("PMID") if medline is not None else None
-        pmid    = pmid_el.text if pmid_el is not None else ""
+        pmid = pmid_el.text if pmid_el is not None and pmid_el.text else ""
 
-        # Title
         title_el = art.find("ArticleTitle") if art is not None else None
-        title    = "".join(title_el.itertext()) if title_el is not None else "No title"
+        title = "".join(title_el.itertext()) if title_el is not None else "No title"
 
-        # Authors
         authors: list[str] = []
         author_list = art.find("AuthorList") if art is not None else None
         if author_list is not None:
             for author in author_list.findall("Author"):
-                last  = author.findtext("LastName", "")
-                init  = author.findtext("Initials", "")
+                last = author.findtext("LastName", "")
+                init = author.findtext("Initials", "")
                 if last:
                     authors.append(f"{last} {init}".strip())
 
-        # Journal & Year
         journal_el = art.find("Journal") if art is not None else None
-        journal    = ""
-        year       = ""
+        journal = ""
+        year = ""
         if journal_el is not None:
             journal = journal_el.findtext("Title", "") or journal_el.findtext("ISOAbbreviation", "")
             pub_date = journal_el.find("JournalIssue/PubDate")
             if pub_date is not None:
                 year = pub_date.findtext("Year", "") or pub_date.findtext("MedlineDate", "")[:4]
 
-        # Abstract
         abstract_parts: list[str] = []
         abstract_el = art.find("Abstract") if art is not None else None
         if abstract_el is not None:
             for text_el in abstract_el.findall("AbstractText"):
                 label = text_el.get("Label", "")
-                text  = "".join(text_el.itertext())
+                text = "".join(text_el.itertext())
                 abstract_parts.append(f"{label}: {text}" if label else text)
         abstract = " ".join(abstract_parts)
 
-        # DOI
         doi = ""
         id_list = article.find(".//ArticleIdList")
         if id_list is not None:
             for aid in id_list.findall("ArticleId"):
-                if aid.get("IdType") == "doi":
-                    doi = aid.text or ""
+                if aid.get("IdType") == "doi" and aid.text:
+                    doi = normalize_doi(aid.text)
                     break
 
-        # MeSH / Keywords
         keywords: list[str] = []
         mesh_list = medline.find("MeshHeadingList") if medline is not None else None
         if mesh_list is not None:
@@ -170,13 +174,13 @@ class PubMedFetcher:
                     keywords.append(kw_text)
 
         return {
-            "title":    title,
-            "authors":  authors,
-            "doi":      doi,
-            "pmid":     pmid,
+            "title": title,
+            "authors": authors,
+            "doi": doi,
+            "pmid": pmid,
             "abstract": abstract,
-            "journal":  journal,
-            "year":     year,
+            "journal": journal,
+            "year": year,
             "keywords": keywords,
-            "source":   "PubMed",
+            "source": "PubMed",
         }

@@ -1,106 +1,169 @@
-"""
-PubChem Client — PUG REST API for compound properties and structure images.
-"""
+"""PubChem Client — PUG REST API for name, CAS, InChIKey, and formula lookup."""
 from __future__ import annotations
 
 import time
-from functools import lru_cache
+import urllib.parse
 from typing import Any
 
 import requests
 
+from src.utils.cache import SQLiteCache, TTL_ENTITY_SECONDS
+from src.utils.common import (
+    QueryResult,
+    cached_query,
+    classify_request_error,
+    is_cas_number,
+    is_inchikey,
+    make_cache_key,
+    normalize_formula,
+)
+
 _BASE = "https://pubchem.ncbi.nlm.nih.gov/rest/pug"
-_PROPS = "MolecularFormula,MolecularWeight,CanonicalSMILES,IsomericSMILES,InChIKey,IUPACName"
+_PROPS = "MolecularFormula,MolecularWeight,IsomericSMILES,CanonicalSMILES,SMILES,ConnectivitySMILES,InChIKey,IUPACName"
 
 
 class PubChemClient:
-    """Query PubChem for compound info. Results are cached per session."""
+    """Query PubChem PUG REST API with persistent caching and polite rate limits."""
 
-    def __init__(self):
+    def __init__(self, cache: SQLiteCache | None = None):
+        self.cache = cache
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "ChemistryDiscoveryHub/1.0"})
+        self.session.headers.update({"User-Agent": "ChemistryDiscoveryHub/2.0"})
 
-    def get_compound_info(self, name: str) -> dict[str, Any] | None:
-        """
-        Retrieve compound properties + structure image URL by name.
+    def search_compound(self, query: str, max_results: int = 5) -> QueryResult:
+        """Search PubChem by CAS number, 27-char InChIKey, or compound name."""
+        q = query.strip()
+        if not q:
+            return QueryResult(source="PubChem", status="empty")
 
-        Args:
-            name: Compound name (e.g. 'quercetin', 'berberine').
-        Returns:
-            Dict with compound metadata or None if not found.
-        """
-        name = name.strip()
-        if not name:
-            return None
+        limit = max(1, min(int(max_results), 20))
+        key = make_cache_key("pubchem_cmp", q.lower(), limit)
 
-        # Step 1: name → CID
-        cid = self._get_cid(name)
-        if not cid:
-            return None
+        def _fetch() -> QueryResult:
+            enc = urllib.parse.quote(q, safe="")
+            if is_cas_number(q):
+                cid_url = f"{_BASE}/compound/xref/rn/{enc}/cids/JSON"
+            elif is_inchikey(q):
+                cid_url = f"{_BASE}/compound/inchikey/{enc}/cids/JSON"
+            else:
+                cid_url = f"{_BASE}/compound/name/{enc}/cids/JSON"
 
-        # Step 2: CID → properties
-        props = self._get_properties(cid)
-        if not props:
-            return None
+            return self._cids_to_result(cid_url, query_label=q, max_results=limit, fetch_cas=True)
 
-        # Step 3: synonyms (for CAS number extraction)
-        synonyms = self._get_synonyms(cid)
-        cas = self._extract_cas(synonyms)
+        return cached_query(self.cache, key, TTL_ENTITY_SECONDS, _fetch)
 
-        return {
-            "cid":          cid,
-            "name":         name,
-            "iupac_name":   props.get("IUPACName", ""),
-            "formula":      props.get("MolecularFormula", ""),
-            "mol_weight":   props.get("MolecularWeight", ""),
-            "smiles":       props.get("IsomericSMILES") or props.get("CanonicalSMILES", ""),
-            "inchikey":     props.get("InChIKey", ""),
-            "cas":          cas,
-            "image_url":    f"{_BASE}/compound/cid/{cid}/PNG?image_size=300x300",
-            "pubchem_url":  f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
-        }
+    def search_by_formula(self, formula: str, max_results: int = 30) -> QueryResult:
+        """Search PubChem by molecular formula via fastformula endpoint (includes synthetics)."""
+        mf = normalize_formula(formula)
+        if not mf:
+            return QueryResult(source="PubChem", status="empty")
 
-    def get_compound_info_batch(
-        self, names: list[str], delay: float = 0.22
-    ) -> list[dict[str, Any] | None]:
-        """Retrieve info for multiple compounds with rate-limiting."""
-        results = []
-        for name in names:
-            results.append(self.get_compound_info(name))
-            time.sleep(delay)
-        return results
+        limit = max(1, min(int(max_results), 50))
+        key = make_cache_key("pubchem_mf", mf, limit)
 
-    # ── Private helpers ──────────────────────────────────────────────────────
+        def _fetch() -> QueryResult:
+            enc = urllib.parse.quote(mf, safe="")
+            cid_url = f"{_BASE}/compound/fastformula/{enc}/cids/JSON"
+            return self._cids_to_result(cid_url, query_label="", max_results=limit, fetch_cas=False)
 
-    def _get_cid(self, name: str) -> int | None:
-        url = f"{_BASE}/compound/name/{requests.utils.quote(name)}/cids/JSON"
+        return cached_query(self.cache, key, TTL_ENTITY_SECONDS, _fetch)
+
+    def _cids_to_result(
+        self,
+        cid_url: str,
+        query_label: str,
+        max_results: int,
+        fetch_cas: bool,
+    ) -> QueryResult:
         try:
-            resp = self.session.get(url, timeout=10)
+            resp = self.session.get(cid_url, timeout=15)
             if resp.status_code == 404:
-                return None
+                return QueryResult(source="PubChem", status="empty", total_count=0)
             resp.raise_for_status()
             cids = resp.json().get("IdentifierList", {}).get("CID", [])
-            return cids[0] if cids else None
         except Exception as exc:
-            print(f"[PubChem] CID lookup failed for '{name}': {exc}")
-            return None
+            return classify_request_error("PubChem", exc)
 
-    def _get_properties(self, cid: int) -> dict | None:
-        url = f"{_BASE}/compound/cid/{cid}/property/{_PROPS}/JSON"
+        if not cids:
+            return QueryResult(source="PubChem", status="empty", total_count=0)
+
+        total = len(cids)
+        target_cids = cids[:max_results]
+        time.sleep(0.22)
+
         try:
-            resp = self.session.get(url, timeout=10)
-            resp.raise_for_status()
-            props_list = resp.json().get("PropertyTable", {}).get("Properties", [])
-            return props_list[0] if props_list else None
+            props_list = self._get_properties_batch(target_cids)
         except Exception as exc:
-            print(f"[PubChem] properties lookup failed for CID {cid}: {exc}")
-            return None
+            return classify_request_error("PubChem", exc)
+
+        items: list[dict[str, Any]] = []
+        for idx, props in enumerate(props_list):
+            cid = props.get("CID")
+            if not cid:
+                continue
+            smiles = (
+                props.get("IsomericSMILES")
+                or props.get("SMILES")
+                or props.get("CanonicalSMILES")
+                or props.get("ConnectivitySMILES")
+                or ""
+            )
+            cas = ""
+            display_name = query_label if (query_label and not is_cas_number(query_label) and not is_inchikey(query_label) and idx == 0) else ""
+            if fetch_cas and idx < 3:
+                time.sleep(0.22)
+                syns = self._get_synonyms(int(cid))
+                cas = self._extract_cas(syns)
+                if not display_name and syns:
+                    # Pick first non-CAS synonym as readable name
+                    for s in syns:
+                        if not is_cas_number(s):
+                            display_name = s
+                            break
+            if is_cas_number(query_label) and not cas:
+                cas = query_label
+
+            items.append({
+                "source": "PubChem",
+                "cid": cid,
+                "name": display_name or props.get("IUPACName") or f"CID {cid}",
+                "iupac_name": props.get("IUPACName", ""),
+                "formula": normalize_formula(props.get("MolecularFormula", "")),
+                "mol_weight": props.get("MolecularWeight", ""),
+                "smiles": smiles,
+                "inchikey": (props.get("InChIKey") or "").strip().upper(),
+                "cas": cas,
+                "pubchem_url": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}",
+            })
+
+        if not items:
+            return QueryResult(source="PubChem", status="empty", total_count=0)
+
+        truncated = total > len(items)
+        status = "truncated" if truncated else "ok"
+        msg = f"{len(items)} / {total} 件表示" if truncated else f"{len(items)} 件"
+        return QueryResult(
+            source="PubChem",
+            status=status,
+            items=items,
+            total_count=total,
+            truncated=truncated,
+            message=msg,
+        )
+
+    def _get_properties_batch(self, cids: list[int]) -> list[dict[str, Any]]:
+        cid_str = ",".join(str(c) for c in cids)
+        url = f"{_BASE}/compound/cid/{cid_str}/property/{_PROPS}/JSON"
+        resp = self.session.get(url, timeout=20)
+        resp.raise_for_status()
+        return resp.json().get("PropertyTable", {}).get("Properties", [])
 
     def _get_synonyms(self, cid: int) -> list[str]:
         url = f"{_BASE}/compound/cid/{cid}/synonyms/JSON"
         try:
             resp = self.session.get(url, timeout=10)
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                return []
             info = resp.json().get("InformationList", {}).get("Information", [])
             return info[0].get("Synonym", []) if info else []
         except Exception:
@@ -108,10 +171,7 @@ class PubChemClient:
 
     @staticmethod
     def _extract_cas(synonyms: list[str]) -> str:
-        """Extract CAS Registry Number from synonym list."""
-        import re
-        cas_pattern = re.compile(r"^\d{2,7}-\d{2}-\d$")
         for syn in synonyms:
-            if cas_pattern.match(syn.strip()):
+            if is_cas_number(syn):
                 return syn.strip()
         return ""
