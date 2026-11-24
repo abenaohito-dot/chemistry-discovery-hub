@@ -25,8 +25,7 @@ class EuropePMCFetcher:
 
     def __init__(self, cache: SQLiteCache | None = None):
         self.cache = cache
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "ChemistryDiscoveryHub/2.0"})
+        self._headers = {"User-Agent": "ChemistryDiscoveryHub/2.0"}
 
     def search(
         self,
@@ -49,14 +48,37 @@ class EuropePMCFetcher:
                 "format": "json",
                 "pageSize": limit,
                 "resultType": "core",
-                "sort": "RELEVANCE",
             }
             try:
-                resp = self.session.get(EUROPE_PMC_URL, params=params, timeout=20)
+                resp = requests.get(
+                    EUROPE_PMC_URL,
+                    params=params,
+                    headers=self._headers,
+                    timeout=(10, 30),
+                )
                 resp.raise_for_status()
                 data = resp.json()
             except Exception as exc:
                 return classify_request_error("EuropePMC", exc)
+
+            if not isinstance(data, dict):
+                return QueryResult(
+                    source="EuropePMC",
+                    status="error",
+                    message="EuropePMC: 不正なレスポンス形式",
+                )
+            if err_code := data.get("errCode"):
+                if str(err_code) == "429":
+                    return QueryResult(
+                        source="EuropePMC",
+                        status="rate_limited",
+                        message="EuropePMC: レート制限 (HTTP 429)",
+                    )
+                return QueryResult(
+                    source="EuropePMC",
+                    status="error",
+                    message=f"EuropePMC: APIエラー ({err_code})",
+                )
 
             total = int(data.get("hitCount") or 0)
             results = data.get("resultList", {}).get("result", [])
@@ -96,13 +118,21 @@ class EuropePMCFetcher:
                 fulltext_url = url_info.get("url", "")
                 break
 
+        journal_info = r.get("journalInfo")
+        journal_obj = journal_info.get("journal") if isinstance(journal_info, dict) else None
+        journal = (
+            r.get("journalTitle")
+            or (journal_obj.get("title") if isinstance(journal_obj, dict) else "")
+            or ""
+        )
+
         return {
             "title": r.get("title", "No title"),
             "authors": authors,
             "doi": normalize_doi(r.get("doi", "")),
             "pmid": r.get("pmid", ""),
             "abstract": r.get("abstractText", ""),
-            "journal": r.get("journalTitle", ""),
+            "journal": journal,
             "year": str(r.get("pubYear", "")),
             "keywords": keywords,
             "citations": r.get("citedByCount", 0),
